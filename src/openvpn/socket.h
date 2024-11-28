@@ -36,6 +36,8 @@
 #include "misc.h"
 #include "tun.h"
 
+#include <linux/vm_sockets.h>
+
 /*
  * OpenVPN's default port number as assigned by IANA.
  */
@@ -476,6 +478,8 @@ bool ipv6_addr_safe(const char *ipv6_text_addr);
 
 socket_descriptor_t create_socket_tcp(struct addrinfo *);
 
+socket_descriptor_t create_socket_vsock(struct addrinfo *);
+
 socket_descriptor_t socket_do_accept(socket_descriptor_t sd,
                                      struct link_socket_actual *act,
                                      const bool nowait);
@@ -563,6 +567,9 @@ enum proto_num {
     PROTO_TCP,
     PROTO_TCP_SERVER,
     PROTO_TCP_CLIENT,
+    PROTO_VSOCK,
+    PROTO_VSOCK_SERVER,
+    PROTO_VSOCK_CLIENT,
     PROTO_N
 };
 
@@ -603,6 +610,35 @@ proto_is_tcp(int proto)
     return proto == PROTO_TCP_CLIENT || proto == PROTO_TCP_SERVER;
 }
 
+/**
+ * @brief returns if the proto is a VSOCK variant (vsock-server, vsock-client)
+ */
+static inline bool
+proto_is_vsock(int proto)
+{
+    ASSERT(proto >= 0 && proto < PROTO_N);
+    return proto == PROTO_VSOCK_CLIENT || proto == PROTO_VSOCK_SERVER;
+}
+
+/**
+ * @brief returns if the proto is a server variant (tcp-server, vsock-server)
+ */
+static inline bool
+proto_is_server(int proto)
+{
+    ASSERT(proto >= 0 && proto < PROTO_N);
+    return proto == PROTO_TCP_SERVER || proto == PROTO_VSOCK_SERVER;
+}
+
+/**
+ * @brief returns if the proto is a client variant (tcp-client, vsock-client)
+ */
+static inline bool
+proto_is_client(int proto)
+{
+    ASSERT(proto >= 0 && proto < PROTO_N);
+    return proto == PROTO_TCP_CLIENT || proto == PROTO_VSOCK_CLIENT;
+}
 
 int ascii2proto(const char *proto_name);
 
@@ -1030,6 +1066,9 @@ socket_is_dco_win(const struct link_socket *s)
 int link_socket_read_tcp(struct link_socket *sock,
                          struct buffer *buf);
 
+int link_socket_read_vsock(struct link_socket *sock,
+                           struct buffer *buf);
+
 #ifdef _WIN32
 
 static inline int
@@ -1079,6 +1118,12 @@ link_socket_read(struct link_socket *sock,
         from->dest = sock->info.lsa->actual.dest;
         return link_socket_read_tcp(sock, buf);
     }
+    else if (proto_is_vsock(sock->info.proto))
+    {
+        /* from address was returned by accept */
+        from->dest = sock->info.lsa->actual.dest;
+        return link_socket_read_vsock(sock, buf);
+    }
     else
     {
         ASSERT(0);
@@ -1093,6 +1138,10 @@ link_socket_read(struct link_socket *sock,
 ssize_t link_socket_write_tcp(struct link_socket *sock,
                               struct buffer *buf,
                               struct link_socket_actual *to);
+
+ssize_t link_socket_write_vsock(struct link_socket *sock,
+                                struct buffer *buf,
+                                struct link_socket_actual *to);
 
 #ifdef _WIN32
 
@@ -1157,6 +1206,14 @@ link_socket_write_tcp_posix(struct link_socket *sock,
     return send(sock->sd, BPTR(buf), BLEN(buf), MSG_NOSIGNAL);
 }
 
+static inline ssize_t
+link_socket_write_vsock_posix(struct link_socket *sock,
+                              struct buffer *buf,
+                              struct link_socket_actual *to)
+{
+    return send(sock->sd, BPTR(buf), BLEN(buf), MSG_NOSIGNAL);
+}
+
 #endif /* ifdef _WIN32 */
 
 static inline ssize_t
@@ -1185,6 +1242,10 @@ link_socket_write(struct link_socket *sock,
     else if (proto_is_tcp(sock->info.proto)) /* unified TCPv4 and TCPv6 */
     {
         return link_socket_write_tcp(sock, buf, to);
+    }
+    else if (proto_is_vsock(sock->info.proto))
+    {
+        return link_socket_write_vsock(sock, buf, to);
     }
     else
     {

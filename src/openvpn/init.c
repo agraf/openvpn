@@ -2813,11 +2813,13 @@ socket_restart_pause(struct context *c)
     switch (c->options.ce.proto)
     {
         case PROTO_TCP_SERVER:
+        case PROTO_VSOCK_SERVER:
             sec = 1;
             break;
 
         case PROTO_UDP:
         case PROTO_TCP_CLIENT:
+        case PROTO_VSOCK_CLIENT:
             sec = c->options.ce.connect_retry_seconds;
             break;
     }
@@ -2834,8 +2836,11 @@ socket_restart_pause(struct context *c)
         sec = 10;
     }
 
-    /* Slow down reconnection after 5 retries per remote -- for TCP client or UDP tls-client only */
-    if (c->options.ce.proto == PROTO_TCP_CLIENT
+    /*
+     * Slow down reconnection after 5 retries per remote -- for TCP client,
+     * VSOCK client or UDP tls-client only
+     */
+    if (proto_is_client(c->options.ce.proto)
         || (c->options.ce.proto == PROTO_UDP && c->options.tls_client))
     {
         backoff = (c->options.unsuccessful_attempts / c->options.connection_list->len) - 4;
@@ -3360,7 +3365,8 @@ do_init_crypto_tls(struct context *c, const unsigned int flags)
 
     /* should we not xmit any packets until we get an initial
      * response from client? */
-    if (to.server && options->ce.proto == PROTO_TCP_SERVER)
+    if (to.server &&
+        (options->ce.proto == PROTO_TCP_SERVER || options->ce.proto == PROTO_VSOCK_SERVER))
     {
         to.xmit_hold = true;
     }
@@ -4510,7 +4516,8 @@ init_instance(struct context *c, const struct env_set *env, const unsigned int f
     /* link_socket_mode allows CM_CHILD_TCP
      * instances to inherit acceptable fds
      * from a top-level parent */
-    if (c->options.ce.proto == PROTO_TCP_SERVER)
+    if (c->options.ce.proto == PROTO_TCP_SERVER ||
+        c->options.ce.proto == PROTO_VSOCK_SERVER)
     {
         if (c->mode == CM_TOP)
         {

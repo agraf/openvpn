@@ -2516,9 +2516,9 @@ options_postprocess_verify_ce(const struct options *options,
     }
 #endif
 
-    if (!ce->remote && ce->proto == PROTO_TCP_CLIENT)
+    if (!ce->remote && proto_is_client(ce->proto))
     {
-        msg(M_USAGE, "--remote MUST be used in TCP Client mode");
+        msg(M_USAGE, "--remote MUST be used in TCP/VSOCK Client mode");
     }
 
     if ((ce->http_proxy_options) && ce->proto != PROTO_TCP_CLIENT)
@@ -2550,6 +2550,11 @@ options_postprocess_verify_ce(const struct options *options,
         msg(M_USAGE, "TCP server mode allows at most one --remote address");
     }
 
+    if (ce->proto == PROTO_VSOCK_SERVER && (options->connection_list->len > 1))
+    {
+        msg(M_USAGE, "VSOCK server mode allows at most one --remote address");
+    }
+
     /*
      * Check consistency of --mode server options.
      */
@@ -2572,16 +2577,15 @@ options_postprocess_verify_ce(const struct options *options,
         {
             msg(M_WARN, "--pull-filter ignored for --mode server");
         }
-        if (!(proto_is_udp(ce->proto) || ce->proto == PROTO_TCP_SERVER))
+        if (!(proto_is_udp(ce->proto) || proto_is_server(ce->proto)))
         {
             msg(M_USAGE, USAGE_VALID_SERVER_PROTOS);
         }
 #if PORT_SHARE
-        if ((options->port_share_host || options->port_share_port)
-            && (ce->proto != PROTO_TCP_SERVER))
+        if ((options->port_share_host || options->port_share_port) && !proto_is_server(ce->proto))
         {
-            msg(M_USAGE, "--port-share only works in TCP server mode "
-                "(--proto values of tcp-server, tcp4-server, or tcp6-server)");
+            msg(M_USAGE, "--port-share only works in server mode "
+                "(--proto values of tcp-server, tcp4-server, or tcp6-server, vsock-server)");
         }
 #endif
         if (!options->tls_server)
@@ -2623,7 +2627,7 @@ options_postprocess_verify_ce(const struct options *options,
                 "--ipchange cannot be used with --mode server (use "
                 "--client-connect instead)");
         }
-        if (!(proto_is_dgram(ce->proto) || ce->proto == PROTO_TCP_SERVER))
+        if (!(proto_is_dgram(ce->proto) || proto_is_server(ce->proto)))
         {
             msg(M_USAGE, USAGE_VALID_SERVER_PROTOS);
         }
@@ -3113,17 +3117,29 @@ options_postprocess_mutate_ce(struct options *o, struct connection_entry *ce)
 
     if (o->server_defined || o->server_bridge_defined || o->server_bridge_proxy_dhcp)
     {
-        if (ce->proto == PROTO_TCP)
+        switch (ce->proto)
         {
-            ce->proto = PROTO_TCP_SERVER;
+            case PROTO_TCP:
+                ce->proto = PROTO_TCP_SERVER;
+                break;
+
+            case PROTO_VSOCK:
+                ce->proto = PROTO_VSOCK_SERVER;
+                break;
         }
     }
 
     if (o->client)
     {
-        if (ce->proto == PROTO_TCP)
+        switch (ce->proto)
         {
-            ce->proto = PROTO_TCP_CLIENT;
+            case PROTO_TCP:
+                ce->proto = PROTO_TCP_CLIENT;
+                break;
+
+            case PROTO_VSOCK:
+                ce->proto = PROTO_VSOCK_CLIENT;
+                break;
         }
     }
 
@@ -3136,7 +3152,7 @@ options_postprocess_mutate_ce(struct options *o, struct connection_entry *ce)
     /* If binding is not forced by an explicit option and we have (at least)
      * one of --tcp-client, --pull (or --client), or socks we do not bind
      * locally to have "normal" IP client behaviour of a random source port */
-    if (!need_bind && (ce->proto == PROTO_TCP_CLIENT || uses_socks || o->pull))
+    if (!need_bind && (proto_is_client(ce->proto) || uses_socks || o->pull))
     {
         ce->bind_local = false;
     }

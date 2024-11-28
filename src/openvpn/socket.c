@@ -1924,7 +1924,7 @@ link_socket_init_phase1(struct context *c, int mode)
     }
 
     /* bind behavior for TCP server vs. client */
-    if (sock->info.proto == PROTO_TCP_SERVER)
+    if (proto_is_server(sock->info.proto))
     {
         if (sock->mode == LS_MODE_TCP_ACCEPT_FROM)
         {
@@ -2049,7 +2049,6 @@ phase2_tcp_server(struct link_socket *sock, const char *remote_dynamic,
     }
 }
 
-
 static void
 phase2_tcp_client(struct link_socket *sock, struct signal_info *sig_info)
 {
@@ -2093,6 +2092,19 @@ phase2_tcp_client(struct link_socket *sock, struct signal_info *sig_info)
 
     } while (proxy_retry);
 
+}
+
+static void
+phase2_vsock_server(struct link_socket *sock, const char *remote_dynamic,
+                    struct signal_info *sig_info)
+{
+    return phase2_tcp_server(sock, remote_dynamic, sig_info);
+}
+
+static void
+phase2_vsock_client(struct link_socket *sock, struct signal_info *sig_info)
+{
+    phase2_vsock_client(sock, sig_info);
 }
 
 static void
@@ -2265,6 +2277,14 @@ link_socket_init_phase2(struct context *c)
     {
         phase2_tcp_client(sock, sig_info);
 
+    }
+    else if (sock->info.proto == PROTO_VSOCK_SERVER)
+    {
+        phase2_vsock_server(sock, remote_dynamic, sig_info);
+    }
+    else if (sock->info.proto == PROTO_VSOCK_CLIENT)
+    {
+        phase2_vsock_client(sock, sig_info);
     }
     else if (sock->info.proto == PROTO_UDP && sock->socks_proxy)
     {
@@ -2586,7 +2606,7 @@ stream_buf_init(struct stream_buf *sb,
     sb->residual = alloc_buf(sb->maxlen);
     sb->error = false;
 #if PORT_SHARE
-    sb->port_share_state = ((sockflags & SF_PORT_SHARE) && (proto == PROTO_TCP_SERVER))
+    sb->port_share_state = ((sockflags & SF_PORT_SHARE) && (proto_is_server(proto)))
                            ? PS_ENABLED
                            : PS_DISABLED;
 #endif
@@ -3030,6 +3050,16 @@ setenv_sockaddr(struct env_set *es, const char *name_prefix, const struct openvp
                 setenv_int(es, name_buf, ntohs(addr->addr.in6.sin6_port));
             }
             break;
+
+        case AF_VSOCK:
+        {
+            const struct sockaddr_vm *sa = (struct sockaddr_vm *)&addr->addr.sa;
+            snprintf(name_buf, sizeof(name_buf), "%s", name_prefix);
+            snprintf(buf, sizeof(buf), "%d:%d", sa->svm_cid, sa->svm_port);
+
+            setenv_str(es, name_buf, buf);
+            break;
+        }
     }
 }
 
@@ -3100,6 +3130,10 @@ static const struct proto_names proto_names[] = {
     {"tcp6-server", "TCPv6_SERVER", AF_INET6, PROTO_TCP_SERVER},
     {"tcp6-client", "TCPv6_CLIENT", AF_INET6, PROTO_TCP_CLIENT},
     {"tcp6",        "TCPv6", AF_INET6, PROTO_TCP},
+    /* vsock */
+    {"vsock-server", "VSOCK_SERVER", AF_VSOCK, PROTO_VSOCK_SERVER},
+    {"vsock-client", "VSOCK_CLIENT", AF_VSOCK, PROTO_VSOCK_CLIENT},
+    {"vsock",        "VSOCK", AF_VSOCK, PROTO_VSOCK},
 };
 
 int
@@ -3177,6 +3211,8 @@ addr_family_name(int af)
         case AF_INET:  return "AF_INET";
 
         case AF_INET6: return "AF_INET6";
+
+        case AF_VSOCK: return "AF_VSOCK";
     }
     return "AF_UNSPEC";
 }
@@ -3211,6 +3247,17 @@ proto_remote(int proto, bool remote)
          || (!remote && proto == PROTO_TCP_CLIENT))
     {
         return "TCPv4_CLIENT";
+    }
+
+    if ( (remote && proto == PROTO_VSOCK_CLIENT)
+         || (!remote && proto == PROTO_VSOCK_SERVER))
+    {
+        return "VSOCK_SERVER";
+    }
+    if ( (remote && proto == PROTO_VSOCK_SERVER)
+         || (!remote && proto == PROTO_VSOCK_CLIENT))
+    {
+        return "VSOCK_CLIENT";
     }
 
     ASSERT(0);
@@ -3283,6 +3330,14 @@ link_socket_read_tcp(struct link_socket *sock,
     {
         return buf->len = 0; /* no error, but packet is still incomplete */
     }
+}
+
+int
+link_socket_read_vsock(struct link_socket *sock,
+                       struct buffer *buf)
+{
+    /* Vsock is a stream like TCP. Use the same code. */
+    return link_socket_read_tcp(sock, buf);
 }
 
 #ifndef _WIN32
@@ -3420,6 +3475,15 @@ link_socket_write_tcp(struct link_socket *sock,
 #else
     return link_socket_write_tcp_posix(sock, buf, to);
 #endif
+}
+
+ssize_t
+link_socket_write_vsock(struct link_socket *sock,
+                      struct buffer *buf,
+                      struct link_socket_actual *to)
+{
+    /* Vsock is a stream like TCP. Use the same code. */
+    return link_socket_write_tcp(sock, buf, to);
 }
 
 #if ENABLE_IP_PKTINFO
